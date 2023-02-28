@@ -2,7 +2,9 @@
 #include <core.p4>
 #include <v1model.p4>
 
+const bit<8>  TCP_PROTOCOL = 0x06;
 const bit<16> TYPE_IPV4 = 0x800;
+const bit<32> IPV4 = 0x0a000303;
 
 /*************************************************************************
 *********************** H E A D E R S  ***********************************
@@ -21,7 +23,9 @@ header ethernet_t {
 header ipv4_t {
     bit<4>    version;
     bit<4>    ihl;
-    bit<8>    diffserv;
+//DSCP definition
+    bit<6>    diffserv;
+    bit<2>    ecn;
     bit<16>   totalLen;
     bit<16>   identification;
     bit<3>    flags;
@@ -34,7 +38,6 @@ header ipv4_t {
 }
 
 struct metadata {
-    /* empty */
 }
 
 struct headers {
@@ -47,18 +50,17 @@ struct headers {
 *************************************************************************/
 
 parser MyParser(packet_in packet,
-                out headers hdr,
-                inout metadata meta,
-                inout standard_metadata_t standard_metadata) {
+                  out headers hdr,
+                  inout metadata meta,
+                  inout standard_metadata_t standard_metadata) {
 
     state start {
-        /* TODO: add parser logic */
-        transition parse_eth;
+        transition parse_ethernet;
     }
-    
-    state parse_eth {
+
+    state parse_ethernet {
         packet.extract(hdr.ethernet);
-        transition select(hdr.ethernet.etherType){
+        transition select(hdr.ethernet.etherType) {
             TYPE_IPV4: parse_ipv4;
             default: accept;
         }
@@ -92,13 +94,12 @@ control MyIngress(inout headers hdr,
     }
     
     action ipv4_forward(macAddr_t dstAddr, egressSpec_t port) {
-        /* TODO: fill out code in action body */
         standard_metadata.egress_spec = port;
         hdr.ethernet.srcAddr = hdr.ethernet.dstAddr;
         hdr.ethernet.dstAddr = dstAddr;
         hdr.ipv4.ttl = hdr.ipv4.ttl - 1;
     }
-    
+
     table ipv4_lpm {
         key = {
             hdr.ipv4.dstAddr: lpm;
@@ -106,18 +107,14 @@ control MyIngress(inout headers hdr,
         actions = {
             ipv4_forward;
             drop;
-            NoAction;
         }
         size = 1024;
-        default_action = drop();
+        default_action = drop;
     }
     
     apply {
-        /* TODO: fix ingress control logic
-         *  - ipv4_lpm should be applied only when IPv4 header is valid
-         */
         if (hdr.ipv4.isValid()) {
-        ipv4_lpm.apply();
+            ipv4_lpm.apply();
         }
     }
 }
@@ -129,7 +126,18 @@ control MyIngress(inout headers hdr,
 control MyEgress(inout headers hdr,
                  inout metadata meta,
                  inout standard_metadata_t standard_metadata) {
-    apply {  }
+    action mark_dscp() {
+        hdr.ipv4.diffserv = 0;
+    }
+    apply {
+        /*
+         * this section is to mark dscp with 0 for specific ip
+         * 
+         */
+        if (hdr.ipv4.srcAddr ==  IPV4){
+            mark_dscp();
+        }
+    }
 }
 
 /*************************************************************************
@@ -137,12 +145,14 @@ control MyEgress(inout headers hdr,
 *************************************************************************/
 
 control MyComputeChecksum(inout headers hdr, inout metadata meta) {
-     apply {
+    apply {
+        /* TODO: replace tos with diffserve and ecn */
 	update_checksum(
 	    hdr.ipv4.isValid(),
             { hdr.ipv4.version,
-	      hdr.ipv4.ihl,
+              hdr.ipv4.ihl,
               hdr.ipv4.diffserv,
+              hdr.ipv4.ecn,
               hdr.ipv4.totalLen,
               hdr.ipv4.identification,
               hdr.ipv4.flags,
@@ -156,14 +166,12 @@ control MyComputeChecksum(inout headers hdr, inout metadata meta) {
     }
 }
 
-
 /*************************************************************************
 ***********************  D E P A R S E R  *******************************
 *************************************************************************/
 
 control MyDeparser(packet_out packet, in headers hdr) {
     apply {
-        /* TODO: add deparser logic */
         packet.emit(hdr.ethernet);
         packet.emit(hdr.ipv4);
     }
